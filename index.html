@@ -1,39 +1,29 @@
 <!DOCTYPE html>
-<html lang="pt-br">
+<html lang="pt-br" class="maker-page">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>STL Fingerprint Maker (Lote)</title>
+    <title>STL Fingerprint Maker (Lote Personalizado)</title>
+    <link rel="stylesheet" href="styles.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
-    <style>
-        :root { --primary: #3498db; --primary-hover: #2980b9; --bg: #f4f7f6; --text: #2c3e50; }
-        body { font-family: 'Segoe UI', system-ui, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; line-height: 1.6; background: var(--bg); color: var(--text); }
-        .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-        h2 { margin-top: 0; color: var(--primary); }
-        label { display: block; margin-top: 15px; font-weight: bold; font-size: 0.9em; }
-        input, button { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
-        button { background: var(--primary); color: white; border: none; cursor: pointer; font-weight: bold; margin-top: 20px; font-size: 1em; }
-        button:hover { background: var(--primary-hover); }
-        button:disabled { background: #bdc3c7; cursor: not-allowed; }
-        .status { margin-top: 20px; font-size: 0.9em; color: #7f8c8d; text-align: center; }
-        #progress { width: 100%; background: #eee; border-radius: 10px; height: 10px; margin-top: 10px; display: none; }
-        #progressBar { height: 100%; background: var(--primary); width: 0%; border-radius: 10px; transition: width 0.3s; }
-    </style>
 </head>
 <body>
+    <nav>
+        <a href="index.html" class="active">Gerador de Lote</a>
+        <a href="extrator.html">Extrator de Marca</a>
+    </nav>
+
     <div class="card">
         <h2>💎 STL Maker (Lote)</h2>
-        <p>Gere cópias marcadas de forma invisível para seus clientes.</p>
+        <p>Gere cópias marcadas com nomes ou e-mails específicos.</p>
         
         <label>Arquivo STL Original:</label>
         <input type="file" id="fileInput" accept=".stl">
         
-        <label>Quantidade de Cópias:</label>
-        <input type="number" id="countInput" value="1" min="1" max="100">
-        
-        <label>Prefixo do ID (Opcional):</label>
-        <input type="text" id="prefixInput" placeholder="Ex: MARK">
+        <label>Lista de Destinatários (um por linha):</label>
+        <textarea id="listInput" rows="6" placeholder="exemplo@email.com&#10;João Silva&#10;Maria Oliveira"></textarea>
+        <p class="info">Cada linha gerará um arquivo STL único com a marca invisível.</p>
 
         <button id="btnGerar" onclick="generateBatch()">Gerar e Baixar ZIP</button>
         
@@ -42,24 +32,23 @@
     </div>
 
 <script>
-    // Configuração Fernet Simplificada (idêntica ao extrator)
+    function sanitizeFilename(name) {
+        return name.replace(/[^a-z0-9]/gi, '_').toLowerCase().substring(0, 50);
+    }
+
     function encryptFernet(plaintext, keyB64) {
         const key = CryptoJS.enc.Base64.parse(keyB64.replace(/-/g, '+').replace(/_/g, '/'));
         const hmacKey = CryptoJS.lib.WordArray.create(key.words.slice(0, 4));
         const aesKey = CryptoJS.lib.WordArray.create(key.words.slice(4, 8));
-        
         const version = CryptoJS.enc.Hex.parse('80');
         const timestamp = CryptoJS.lib.WordArray.create([0, Math.floor(Date.now() / 1000)], 8);
         const iv = CryptoJS.lib.WordArray.random(16);
-        
         const encrypted = CryptoJS.AES.encrypt(plaintext, aesKey, {
             iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7
         });
         const ciphertext = encrypted.ciphertext;
-        
         const hmacPayload = version.clone().concat(timestamp).concat(iv).concat(ciphertext);
         const hmac = CryptoJS.HmacSHA256(hmacPayload, hmacKey);
-        
         const token = hmacPayload.concat(hmac);
         return CryptoJS.enc.Base64.stringify(token).replace(/\+/g, '-').replace(/\//g, '_');
     }
@@ -74,14 +63,15 @@
 
     async function generateBatch() {
         const fileInput = document.getElementById('fileInput');
-        const count = parseInt(document.getElementById('countInput').value);
-        const prefix = document.getElementById('prefixInput').value.trim() || "MARK";
+        const listText = document.getElementById('listInput').value.trim();
+        const recipients = listText.split('\n').map(r => r.trim()).filter(r => r.length > 0);
         const btn = document.getElementById('btnGerar');
         const status = document.getElementById('statusText');
         const bar = document.getElementById('progressBar');
         const progressContainer = document.getElementById('progress');
 
         if (!fileInput.files[0]) return alert("Selecione um arquivo STL.");
+        if (recipients.length === 0) return alert("Insira ao menos um destinatário na lista.");
 
         btn.disabled = true;
         progressContainer.style.display = "block";
@@ -89,37 +79,30 @@
         try {
             const originalBuffer = await fileInput.files[0].arrayBuffer();
             const zip = new JSZip();
-            
-            // 1. Gerar/Definir Chave
             const keyWA = CryptoJS.lib.WordArray.random(32);
             const keyB64 = CryptoJS.enc.Base64.stringify(keyWA).replace(/\+/g, '-').replace(/\//g, '_');
             zip.file("key.txt", keyB64);
 
             const stlName = fileInput.files[0].name.replace('.stl', '');
+            const count = recipients.length;
             
             for (let i = 0; i < count; i++) {
-                status.innerText = `Gerando cópia ${i+1} de ${count}...`;
+                const currentRecipient = recipients[i];
+                status.innerText = `Processando: ${currentRecipient} (${i+1}/${count})...`;
                 bar.style.width = `${((i) / count) * 100}%`;
 
-                // 2. Gerar ID e Encriptar
-                const randomId = Math.floor(100000 + Math.random() * 900000);
-                const fullId = `${prefix}_${randomId}`;
-                const encryptedToken = encryptFernet(fullId, keyB64);
-
-                // 3. Preparar Payload Binário [Len(4 bytes)][Base64 Token]
+                const encryptedToken = encryptFernet(currentRecipient, keyB64);
                 const tokenEncoder = new TextEncoder();
                 const tokenBytes = tokenEncoder.encode(encryptedToken);
                 const payload = new Uint8Array(4 + tokenBytes.length);
-                new DataView(payload.buffer).setUint32(0, tokenBytes.length, false); // Big Endian
+                new DataView(payload.buffer).setUint32(0, tokenBytes.length, false); 
                 payload.set(tokenBytes, 4);
 
-                // Converter payload para bits
                 let bits = [];
                 for (let b of payload) {
                     for (let j = 0; j < 8; j++) bits.push((b >> j) & 1);
                 }
 
-                // 4. Clonar Buffer e Aplicar Steganografia
                 const newBuffer = originalBuffer.slice(0);
                 const view = new DataView(newBuffer);
                 const numTriangles = view.getUint32(80, true);
@@ -127,8 +110,8 @@
                 let bitIdx = 0;
                 let pos = 84;
                 for (let t = 0; t < numTriangles && bitIdx < bits.length; t++) {
-                    pos += 12; // Pula Normal
-                    for (let v = 0; v < 9; v++) { // 3 vértices * 3 coords
+                    pos += 12;
+                    for (let v = 0; v < 9; v++) {
                         if (bitIdx >= bits.length) break;
                         let val = view.getUint32(pos, true);
                         if (bits[bitIdx]) val |= 1;
@@ -137,31 +120,28 @@
                         bitIdx++;
                         pos += 4;
                     }
-                    pos += 2; // Atributo
+                    pos += 2;
                 }
 
-                // 5. MD5 e Adicionar ao ZIP
                 const finalStlBytes = new Uint8Array(newBuffer);
                 const md5 = CryptoJS.MD5(u8ToWords(finalStlBytes)).toString();
-                
-                const baseFileName = `${stlName}_ID_${fullId}`;
+                const sanitizedId = sanitizeFilename(currentRecipient);
+                const baseFileName = `${stlName}_ID_${sanitizedId}`;
                 zip.file(`${baseFileName}.stl`, finalStlBytes);
                 zip.file(`${baseFileName}.txt`, md5);
             }
 
             bar.style.width = "100%";
-            status.innerText = "Empacotando ZIP...";
-            
+            status.innerText = "Criando arquivo ZIP final...";
             const zipBlob = await zip.generateAsync({type: "blob"});
             const link = document.createElement('a');
             link.href = URL.createObjectURL(zipBlob);
             link.download = `fingerprints_${stlName}.zip`;
             link.click();
-
-            status.innerText = "Concluído! O download iniciará em instantes.";
+            status.innerText = "Concluído! ZIP baixado com sucesso.";
         } catch (e) {
             console.error(e);
-            status.innerText = "Erro no processamento. Veja o console.";
+            status.innerText = "Erro no processamento.";
         } finally {
             btn.disabled = false;
         }
