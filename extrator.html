@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Extrator de Marca Invisível STL</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <style>
+        :root { --primary: #2ecc71; --primary-hover: #27ae60; --bg: #f4f7f6; --text: #2c3e50; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; line-height: 1.6; background: var(--bg); color: var(--text); }
+        .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        label { display: block; margin-top: 15px; font-weight: bold; }
+        input, button { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
+        button { background: var(--primary); color: white; border: none; cursor: pointer; font-weight: bold; margin-top: 20px; }
+        button:hover { background: var(--primary-hover); }
+        #result { margin-top: 25px; padding: 15px; border-radius: 6px; display: none; word-break: break-all; text-align: center; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        code { background: rgba(0,0,0,0.05); padding: 2px 4px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🛡️ Extrator STL</h2>
+        <p>Selecione o arquivo STL e insira a chave do <code>key.txt</code>.</p>
+        
+        <label>Arquivo STL Marcado:</label>
+        <input type="file" id="fileInput" accept=".stl">
+        
+        <label>Chave de Segurança:</label>
+        <input type="text" id="keyInput" placeholder="Cole a chave aqui...">
+        
+        <button onclick="extract()">Verificar Identidade</button>
+        
+        <div id="result"></div>
+    </div>
+
+<script>
+    // Converte Uint8Array para WordArray do CryptoJS
+    function u8ToWords(u8) {
+        const words = [];
+        for (let i = 0; i < u8.length; i += 4) {
+            words.push((u8[i] << 24) | (u8[i+1] << 16) | (u8[i+2] << 8) | (u8[i+3]));
+        }
+        return CryptoJS.lib.WordArray.create(words, u8.length);
+    }
+
+    async function extract() {
+        const fileInput = document.getElementById('fileInput');
+        const keyInput = document.getElementById('keyInput').value.trim();
+        const resultDiv = document.getElementById('result');
+        
+        if (!fileInput.files[0] || !keyInput) {
+            alert("Preencha todos os campos.");
+            return;
+        }
+
+        resultDiv.style.display = "none";
+        console.log("Iniciando extração...");
+
+        try {
+            const buffer = await fileInput.files[0].arrayBuffer();
+            const view = new DataView(buffer);
+
+            // 1. Verificar se é Binário ou ASCII
+            const header = new TextDecoder().decode(buffer.slice(0, 5));
+            if (header === "solid") {
+                throw new Error("Este arquivo está em formato ASCII. O extrator atual suporta apenas STL Binário.");
+            }
+
+            if (buffer.byteLength < 84) throw new Error("Arquivo STL inválido ou corrompido.");
+
+            const numTriangles = view.getUint32(80, true);
+            console.log("Triângulos encontrados:", numTriangles);
+
+            // 2. Extrair Bits LSB
+            let bits = [];
+            let pos = 84;
+            // Pegamos bits suficientes para o payload (~250 bytes = 2000 bits)
+            const targetBits = Math.min(numTriangles * 9, 4000);
+
+            for (let i = 0; i < numTriangles && bits.length < targetBits; i++) {
+                pos += 12; // Pula Normal
+                for (let v = 0; v < 9; v++) { // 3 vértices * 3 coordenadas
+                    if (pos + 4 > buffer.byteLength) break;
+                    let val = view.getUint32(pos, true); // Lê representação inteira do float
+                    bits.push(val & 1);
+                    pos += 4;
+                }
+                pos += 2; // Pula Atributo
+            }
+
+            // 3. Bits para Bytes
+            let bytes = new Uint8Array(Math.floor(bits.length / 8));
+            for (let i = 0; i < bytes.length; i++) {
+                let byte = 0;
+                for (let j = 0; j < 8; j++) {
+                    if (bits[i * 8 + j]) byte |= (1 << j);
+                }
+                bytes[i] = byte;
+            }
+
+            // 4. Ler tamanho do Payload (primeiros 4 bytes, Big Endian)
+            const payloadLen = (bytes[0] << 24 | bytes[1] << 16 | bytes[2] << 8 | bytes[3]) >>> 0;
+            console.log("Tamanho do payload detectado:", payloadLen);
+
+            if (payloadLen === 0 || payloadLen > bytes.length - 4) {
+                throw new Error("Não foi possível encontrar uma marca válida. Verifique se o arquivo está marcado.");
+            }
+
+            const fernetBase64 = new TextDecoder().decode(bytes.slice(4, 4 + payloadLen)).replace(/-/g, '+').replace(/_/g, '/');
+            console.log("Token Base64 extraído:", fernetBase64);
+
+            // Decodifica o token Base64 para binário (Uint8Array)
+            const binaryTokenString = atob(fernetBase64);
+            const fernetData = new Uint8Array(binaryTokenString.length);
+            for (let i = 0; i < binaryTokenString.length; i++) {
+                fernetData[i] = binaryTokenString.charCodeAt(i);
+            }
+            
+            // 5. Descriptografia Fernet
+            // Formato Binário: [1 byte ver][8 bytes time][16 bytes IV][Cipher...][32 bytes HMAC]
+            if (fernetData.length < 57) throw new Error("Token Fernet inválido.");
+
+            const iv = u8ToWords(fernetData.slice(9, 25));
+            const ciphertext = u8ToWords(fernetData.slice(25, -32));
+            
+            // Chave Fernet: 32 bytes Base64 (URL-Safe)
+            const cleanKey = keyInput.replace(/-/g, '+').replace(/_/g, '/');
+            const rawKey = CryptoJS.enc.Base64.parse(cleanKey);
+            if (rawKey.sigBytes !== 32) throw new Error("Chave inválida. Use a chave de 32 bytes do key.txt.");
+
+            const encKey = CryptoJS.lib.WordArray.create(rawKey.words.slice(4, 8));
+
+            const decrypted = CryptoJS.AES.decrypt(
+                { ciphertext: ciphertext },
+                encKey,
+                { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 }
+            );
+
+            const result = decrypted.toString(CryptoJS.enc.Utf8);
+            if (!result) throw new Error("Falha na descriptografia. Verifique se a chave está correta.");
+
+            resultDiv.style.display = "block";
+            resultDiv.className = "success";
+            resultDiv.innerHTML = "<strong>✅ SUCESSO!</strong><br><br>ID Identificado:<br><code>" + result + "</code>";
+
+        } catch (e) {
+            console.error("Erro detalhado:", e);
+            resultDiv.style.display = "block";
+            resultDiv.className = "error";
+            resultDiv.innerHTML = "<strong>❌ ERRO:</strong><br>" + e.message;
+        }
+    }
+</script>
+</body>
+</html>
