@@ -9,6 +9,11 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
 </head>
 <body>
+    <div id="loadingOverlay">
+        <div class="spinner"></div>
+        <p>Aguardando sistema...</p>
+    </div>
+
     <nav>
         <a href="index.html" class="active">Gerador de Lote</a>
         <a href="extrator.html">Extrator de Marca</a>
@@ -19,7 +24,7 @@
         <p>Gere cópias marcadas com nomes ou e-mails específicos.</p>
         
         <label>Arquivo STL Original:</label>
-        <input type="file" id="fileInput" accept=".stl">
+        <input type="file" id="fileInput" accept=".stl" onchange="updateFileStatus()" onclick="showOverlay()" oncancel="hideOverlay()">
         
         <label>Lista de Destinatários (um por linha):</label>
         <textarea id="listInput" rows="6" placeholder="exemplo@email.com&#10;João Silva&#10;Maria Oliveira"></textarea>
@@ -32,6 +37,26 @@
     </div>
 
 <script>
+    const yieldToMain = (ms = 10) => new Promise(r => setTimeout(r, ms));
+
+    function showOverlay() {
+        document.getElementById('loadingOverlay').style.display = 'flex';
+    }
+
+    function hideOverlay() {
+        console.log("Escondendo overlay de carregamento...");
+        document.getElementById('loadingOverlay').style.display = 'none';
+    }
+
+    function updateFileStatus() {
+        hideOverlay();
+        const file = document.getElementById('fileInput').files[0];
+        const status = document.getElementById('statusText');
+        if (file) {
+            status.innerText = `Arquivo selecionado: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`;
+        }
+    }
+
     function sanitizeFilename(name) {
         return name.replace(/[^a-z0-9]/gi, '_').toLowerCase().substring(0, 50);
     }
@@ -53,9 +78,14 @@
         return CryptoJS.enc.Base64.stringify(token).replace(/\+/g, '-').replace(/\//g, '_');
     }
 
-    function u8ToWords(u8) {
+    async function u8ToWords(u8, onProgress) {
         const words = [];
-        for (let i = 0; i < u8.length; i += 4) {
+        const total = u8.length;
+        for (let i = 0; i < total; i += 4) {
+            if (i % 1000000 === 0 && onProgress) {
+                onProgress(i / total);
+                await yieldToMain();
+            }
             words.push((u8[i] << 24) | (u8[i+1] << 16) | (u8[i+2] << 8) | (u8[i+3]));
         }
         return CryptoJS.lib.WordArray.create(words, u8.length);
@@ -75,8 +105,13 @@
 
         btn.disabled = true;
         progressContainer.style.display = "block";
+        bar.style.width = "0%";
+        status.innerText = "Preparando processamento...";
         
         try {
+            await yieldToMain(100);
+            status.innerText = "Carregando arquivo original para memória...";
+            await yieldToMain(50);
             const originalBuffer = await fileInput.files[0].arrayBuffer();
             const zip = new JSZip();
             const keyWA = CryptoJS.lib.WordArray.random(32);
@@ -88,8 +123,11 @@
             
             for (let i = 0; i < count; i++) {
                 const currentRecipient = recipients[i];
-                status.innerText = `Processando: ${currentRecipient} (${i+1}/${count})...`;
-                bar.style.width = `${((i) / count) * 100}%`;
+                const baseProgress = (i / count) * 100;
+                
+                status.innerText = `[${i+1}/${count}] Criptografando: ${currentRecipient}`;
+                bar.style.width = `${baseProgress}%`;
+                await yieldToMain();
 
                 const encryptedToken = encryptFernet(currentRecipient, keyB64);
                 const tokenEncoder = new TextEncoder();
@@ -102,6 +140,9 @@
                 for (let b of payload) {
                     for (let j = 0; j < 8; j++) bits.push((b >> j) & 1);
                 }
+
+                status.innerText = `[${i+1}/${count}] Aplicando marca: ${currentRecipient}`;
+                await yieldToMain();
 
                 const newBuffer = originalBuffer.slice(0);
                 const view = new DataView(newBuffer);
@@ -123,17 +164,31 @@
                     pos += 2;
                 }
 
+                status.innerText = `[${i+1}/${count}] Calculando integridade: ${currentRecipient}`;
+                bar.style.width = `${baseProgress + (0.5 / count) * 100}%`;
+                await yieldToMain();
+
                 const finalStlBytes = new Uint8Array(newBuffer);
-                const md5 = CryptoJS.MD5(u8ToWords(finalStlBytes)).toString();
+                const words = await u8ToWords(finalStlBytes, (p) => {
+                    bar.style.width = `${baseProgress + (0.5 + p * 0.4) / count * 100}%`;
+                });
+                const md5 = CryptoJS.MD5(words).toString();
+                
                 const sanitizedId = sanitizeFilename(currentRecipient);
                 const baseFileName = `${stlName}_ID_${sanitizedId}`;
                 zip.file(`${baseFileName}.stl`, finalStlBytes);
                 zip.file(`${baseFileName}.txt`, md5);
+                
+                bar.style.width = `${((i + 1) / count) * 100}%`;
             }
 
+            status.innerText = "Finalizando pacote ZIP...";
             bar.style.width = "100%";
-            status.innerText = "Criando arquivo ZIP final...";
-            const zipBlob = await zip.generateAsync({type: "blob"});
+            await yieldToMain();
+            
+            const zipBlob = await zip.generateAsync({type: "blob"}, (p) => {
+                status.innerText = `Comprimindo ZIP: ${Math.round(p.percent)}%`;
+            });
             const link = document.createElement('a');
             link.href = URL.createObjectURL(zipBlob);
             link.download = `fingerprints_${stlName}.zip`;

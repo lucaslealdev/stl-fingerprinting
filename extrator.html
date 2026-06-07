@@ -8,6 +8,11 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
 </head>
 <body>
+    <div id="loadingOverlay">
+        <div class="spinner"></div>
+        <p>Aguardando sistema...</p>
+    </div>
+
     <nav>
         <a href="index.html">Gerador de Lote</a>
         <a href="extrator.html" class="active">Extrator de Marca</a>
@@ -18,17 +23,36 @@
         <p>Selecione o arquivo STL e insira a chave do <code>key.txt</code>.</p>
         
         <label>Arquivo STL Marcado:</label>
-        <input type="file" id="fileInput" accept=".stl">
+        <input type="file" id="fileInput" accept=".stl" onchange="updateFileStatus()" onclick="showOverlay()" oncancel="hideOverlay()">
         
         <label>Chave de Segurança:</label>
         <input type="text" id="keyInput" placeholder="Cole a chave aqui...">
         
         <button onclick="extract()">Verificar Identidade</button>
         
+        <div id="progress"><div id="progressBar"></div></div>
+        <div class="status" id="statusText">Aguardando comando...</div>
         <div id="result"></div>
     </div>
 
 <script>
+    function showOverlay() {
+        document.getElementById('loadingOverlay').style.display = 'flex';
+    }
+
+    function hideOverlay() {
+        document.getElementById('loadingOverlay').style.display = 'none';
+    }
+
+    function updateFileStatus() {
+        hideOverlay();
+        const file = document.getElementById('fileInput').files[0];
+        const status = document.getElementById('statusText');
+        if (file) {
+            status.innerText = `Arquivo selecionado: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`;
+        }
+    }
+
     function u8ToWords(u8) {
         const words = [];
         for (let i = 0; i < u8.length; i += 4) {
@@ -41,6 +65,9 @@
         const fileInput = document.getElementById('fileInput');
         const keyInput = document.getElementById('keyInput').value.trim();
         const resultDiv = document.getElementById('result');
+        const status = document.getElementById('statusText');
+        const bar = document.getElementById('progressBar');
+        const progressContainer = document.getElementById('progress');
         
         if (!fileInput.files[0] || !keyInput) {
             alert("Preencha todos os campos.");
@@ -48,28 +75,48 @@
         }
 
         resultDiv.style.display = "none";
+        progressContainer.style.display = "block";
+        bar.style.width = "0%";
+        status.innerText = "Lendo cabeçalho do arquivo...";
+
         try {
-            const buffer = await fileInput.files[0].arrayBuffer();
+            await new Promise(r => setTimeout(r, 50)); 
+            const file = fileInput.files[0];
+            
+            // Otimização: Lemos apenas os primeiros 100KB. 
+            // Cabeçalho (84 bytes) + ~2000 triângulos (50 bytes cada) é suficiente para buscar 4000 bits.
+            const slice = file.slice(0, 100000); 
+            const buffer = await slice.arrayBuffer();
             const view = new DataView(buffer);
+            
+            status.innerText = "Analisando geometria (modo rápido)...";
+            bar.style.width = "30%";
+            await new Promise(r => setTimeout(r, 50));
+
             const header = new TextDecoder().decode(buffer.slice(0, 5));
             if (header === "solid") throw new Error("Este arquivo está em formato ASCII. Use STL Binário.");
-            if (buffer.byteLength < 84) throw new Error("Arquivo STL inválido.");
+            if (buffer.byteLength < 84) throw new Error("Arquivo STL inválido ou muito pequeno.");
 
             const numTriangles = view.getUint32(80, true);
             let bits = [];
             let pos = 84;
-            const targetBits = Math.min(numTriangles * 9, 4000);
+            const targetBits = 4000; 
 
             for (let i = 0; i < numTriangles && bits.length < targetBits; i++) {
-                pos += 12;
+                if (pos + 50 > buffer.byteLength) break; 
+
+                pos += 12; 
                 for (let v = 0; v < 9; v++) {
-                    if (pos + 4 > buffer.byteLength) break;
                     let val = view.getUint32(pos, true);
                     bits.push(val & 1);
                     pos += 4;
                 }
-                pos += 2;
+                pos += 2; 
             }
+
+            status.innerText = "Descriptografando marca...";
+            bar.style.width = "80%";
+            await new Promise(r => setTimeout(r, 50));
 
             let bytes = new Uint8Array(Math.floor(bits.length / 8));
             for (let i = 0; i < bytes.length; i++) {
@@ -99,10 +146,14 @@
             const result = decrypted.toString(CryptoJS.enc.Utf8);
             if (!result) throw new Error("Falha na descriptografia.");
 
+            bar.style.width = "100%";
+            status.innerText = "Extração concluída.";
             resultDiv.style.display = "block";
             resultDiv.className = "success";
             resultDiv.innerHTML = "<strong>✅ SUCESSO!</strong><br><br>ID Identificado:<br><code>" + result + "</code>";
         } catch (e) {
+            bar.style.width = "0%";
+            status.innerText = "Falha na extração.";
             resultDiv.style.display = "block";
             resultDiv.className = "error";
             resultDiv.innerHTML = "<strong>❌ ERRO:</strong><br>" + e.message;
