@@ -6,6 +6,7 @@
     <title>Extrator de Marca Invisível STL</title>
     <link rel="stylesheet" href="styles.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <script src="core.js"></script>
 </head>
 <body>
     <div id="loadingOverlay">
@@ -53,14 +54,6 @@
         }
     }
 
-    function u8ToWords(u8) {
-        const words = [];
-        for (let i = 0; i < u8.length; i += 4) {
-            words.push((u8[i] << 24) | (u8[i+1] << 16) | (u8[i+2] << 8) | (u8[i+3]));
-        }
-        return CryptoJS.lib.WordArray.create(words, u8.length);
-    }
-
     async function extract() {
         const fileInput = document.getElementById('fileInput');
         const keyInput = document.getElementById('keyInput').value.trim();
@@ -82,75 +75,103 @@
         try {
             await new Promise(r => setTimeout(r, 50)); 
             const file = fileInput.files[0];
-            
-            // Otimização: Lemos apenas os primeiros 100KB. 
-            // Cabeçalho (84 bytes) + ~2000 triângulos (50 bytes cada) é suficiente para buscar 4000 bits.
-            const slice = file.slice(0, 100000); 
-            const buffer = await slice.arrayBuffer();
+            const buffer = await file.arrayBuffer();
             const view = new DataView(buffer);
             
-            status.innerText = "Analisando geometria (modo rápido)...";
-            bar.style.width = "30%";
+            status.innerText = "Analisando geometria completa (Modo Robusto)...";
+            bar.style.width = "20%";
             await new Promise(r => setTimeout(r, 50));
 
-            const header = new TextDecoder().decode(buffer.slice(0, 5));
-            if (header === "solid") throw new Error("Este arquivo está em formato ASCII. Use STL Binário.");
+            const headerText = new TextDecoder().decode(buffer.slice(0, 5));
+            if (headerText === "solid") throw new Error("Este arquivo está em formato ASCII. Use STL Binário.");
             if (buffer.byteLength < 84) throw new Error("Arquivo STL inválido ou muito pequeno.");
 
             const numTriangles = view.getUint32(80, true);
-            let bits = [];
+            let bits = new Uint8Array(numTriangles * 9); // Usar Uint8Array para economizar memória
             let pos = 84;
-            const targetBits = 4000; 
+            let bitCount = 0;
 
-            for (let i = 0; i < numTriangles && bits.length < targetBits; i++) {
+            for (let i = 0; i < numTriangles; i++) {
                 if (pos + 50 > buffer.byteLength) break; 
-
                 pos += 12; 
                 for (let v = 0; v < 9; v++) {
-                    let val = view.getUint32(pos, true);
-                    bits.push(val & 1);
+                    bits[bitCount++] = view.getUint32(pos, true) & 1;
                     pos += 4;
                 }
                 pos += 2; 
             }
 
-            status.innerText = "Descriptografando marca...";
-            bar.style.width = "80%";
+            status.innerText = "Escaneando marcas redundantes...";
+            bar.style.width = "50%";
             await new Promise(r => setTimeout(r, 50));
 
-            let bytes = new Uint8Array(Math.floor(bits.length / 8));
-            for (let i = 0; i < bytes.length; i++) {
-                let byte = 0;
-                for (let j = 0; j < 8; j++) if (bits[i * 8 + j]) byte |= (1 << j);
-                bytes[i] = byte;
+            const syncMarker = [0x53, 0x54, 0x4c, 0x46]; // "STLF"
+            const markerBits = [];
+            for (let b of syncMarker) {
+                for (let j = 0; j < 8; j++) markerBits.push((b >> j) & 1);
             }
 
-            const payloadLen = (bytes[0] << 24 | bytes[1] << 16 | bytes[2] << 8 | bytes[3]) >>> 0;
-            if (payloadLen === 0 || payloadLen > bytes.length - 4) throw new Error("Marca não encontrada.");
+            // Função para extrair bytes de um ponto específico dos bits
+            function getBytes(bitArray, startBit, byteLen) {
+                let out = new Uint8Array(byteLen);
+                for (let i = 0; i < byteLen; i++) {
+                    let byte = 0;
+                    for (let j = 0; j < 8; j++) {
+                        if (bitArray[startBit + i * 8 + j]) byte |= (1 << j);
+                    }
+                    out[i] = byte;
+                }
+                return out;
+            }
 
-            const fernetBase64 = new TextDecoder().decode(bytes.slice(4, 4 + payloadLen)).replace(/-/g, '+').replace(/_/g, '/');
-            const binaryTokenString = atob(fernetBase64);
-            const fernetData = new Uint8Array(binaryTokenString.length);
-            for (let i = 0; i < binaryTokenString.length; i++) fernetData[i] = binaryTokenString.charCodeAt(i);
-            
-            if (fernetData.length < 57) throw new Error("Token Fernet inválido.");
+            let foundResult = null;
+            let errors = [];
 
-            const iv = u8ToWords(fernetData.slice(9, 25));
-            const ciphertext = u8ToWords(fernetData.slice(25, -32));
-            const cleanKey = keyInput.replace(/-/g, '+').replace(/_/g, '/');
-            const rawKey = CryptoJS.enc.Base64.parse(cleanKey);
-            if (rawKey.sigBytes !== 32) throw new Error("Chave inválida.");
+            // Escaneamento bit a bit para robustez máxima contra deleção de triângulos
+            for (let i = 0; i < bitCount - markerBits.length - 64; i++) {
+                let match = true;
+                for (let j = 0; j < markerBits.length; j++) {
+                    if (bits[i + j] !== markerBits[j]) { match = false; break; }
+                }
 
-            const encKey = CryptoJS.lib.WordArray.create(rawKey.words.slice(4, 8));
-            const decrypted = CryptoJS.AES.decrypt({ ciphertext: ciphertext }, encKey, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-            const result = decrypted.toString(CryptoJS.enc.Utf8);
-            if (!result) throw new Error("Falha na descriptografia.");
+                if (match) {
+                    try {
+                        const lenStart = i + markerBits.length;
+                        const lenBytes = getBytes(bits, lenStart, 4);
+                        const payloadLen = (lenBytes[0] << 24 | lenBytes[1] << 16 | lenBytes[2] << 8 | lenBytes[3]) >>> 0;
+                        
+                        if (payloadLen > 0 && payloadLen < 2000) { // Sanity check
+                            const payloadStart = lenStart + 32;
+                            const payloadBytes = getBytes(bits, payloadStart, payloadLen);
+                            const fernetBase64 = new TextDecoder().decode(payloadBytes).replace(/-/g, '+').replace(/_/g, '/');
+                            
+                            // Tentar descriptografar
+                            const result = decryptFernet(fernetBase64, keyInput);
+                            if (result) {
+                                foundResult = result;
+                                break; // Encontramos uma cópia válida!
+                            }
+                        }
+                    } catch (e) {
+                        // Silenciosamente ignorar falhas nesta cópia e tentar a próxima
+                    }
+                    i += markerBits.length; // Pular o marcador encontrado
+                }
+                
+                if (i % 50000 === 0) {
+                    status.innerText = `Escaneando: ${Math.round((i/bitCount)*100)}%...`;
+                    await new Promise(r => setTimeout(r, 0));
+                }
+            }
+
+            if (!foundResult) throw new Error("Nenhuma marca válida encontrada ou chave incorreta.");
 
             bar.style.width = "100%";
-            status.innerText = "Extração concluída.";
+            status.innerText = "Extração concluída com sucesso!";
             resultDiv.style.display = "block";
             resultDiv.className = "success";
-            resultDiv.innerHTML = "<strong>✅ SUCESSO!</strong><br><br>ID Identificado:<br><code>" + result + "</code>";
+            resultDiv.innerHTML = "<strong>✅ SUCESSO!</strong><br><br>ID Identificado:<br><code>" + foundResult + "</code>";
+
         } catch (e) {
             bar.style.width = "0%";
             status.innerText = "Falha na extração.";

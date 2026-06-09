@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="styles.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <script src="core.js"></script>
 </head>
 <body>
     <div id="loadingOverlay">
@@ -37,8 +38,6 @@
     </div>
 
 <script>
-    const yieldToMain = (ms = 10) => new Promise(r => setTimeout(r, ms));
-
     function showOverlay() {
         document.getElementById('loadingOverlay').style.display = 'flex';
     }
@@ -55,40 +54,6 @@
         if (file) {
             status.innerText = `Arquivo selecionado: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`;
         }
-    }
-
-    function sanitizeFilename(name) {
-        return name.replace(/[^a-z0-9]/gi, '_').toLowerCase().substring(0, 50);
-    }
-
-    function encryptFernet(plaintext, keyB64) {
-        const key = CryptoJS.enc.Base64.parse(keyB64.replace(/-/g, '+').replace(/_/g, '/'));
-        const hmacKey = CryptoJS.lib.WordArray.create(key.words.slice(0, 4));
-        const aesKey = CryptoJS.lib.WordArray.create(key.words.slice(4, 8));
-        const version = CryptoJS.enc.Hex.parse('80');
-        const timestamp = CryptoJS.lib.WordArray.create([0, Math.floor(Date.now() / 1000)], 8);
-        const iv = CryptoJS.lib.WordArray.random(16);
-        const encrypted = CryptoJS.AES.encrypt(plaintext, aesKey, {
-            iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7
-        });
-        const ciphertext = encrypted.ciphertext;
-        const hmacPayload = version.clone().concat(timestamp).concat(iv).concat(ciphertext);
-        const hmac = CryptoJS.HmacSHA256(hmacPayload, hmacKey);
-        const token = hmacPayload.concat(hmac);
-        return CryptoJS.enc.Base64.stringify(token).replace(/\+/g, '-').replace(/\//g, '_');
-    }
-
-    async function u8ToWords(u8, onProgress) {
-        const words = [];
-        const total = u8.length;
-        for (let i = 0; i < total; i += 4) {
-            if (i % 1000000 === 0 && onProgress) {
-                onProgress(i / total);
-                await yieldToMain();
-            }
-            words.push((u8[i] << 24) | (u8[i+1] << 16) | (u8[i+2] << 8) | (u8[i+3]));
-        }
-        return CryptoJS.lib.WordArray.create(words, u8.length);
     }
 
     async function generateBatch() {
@@ -132,16 +97,20 @@
                 const encryptedToken = encryptFernet(currentRecipient, keyB64);
                 const tokenEncoder = new TextEncoder();
                 const tokenBytes = tokenEncoder.encode(encryptedToken);
-                const payload = new Uint8Array(4 + tokenBytes.length);
-                new DataView(payload.buffer).setUint32(0, tokenBytes.length, false); 
-                payload.set(tokenBytes, 4);
+                
+                // Estrutura Robusta: [SYNC 4 bytes] [LEN 4 bytes] [PAYLOAD]
+                const syncMarker = [0x53, 0x54, 0x4c, 0x46]; // "STLF"
+                const fullPayload = new Uint8Array(syncMarker.length + 4 + tokenBytes.length);
+                fullPayload.set(syncMarker, 0);
+                new DataView(fullPayload.buffer).setUint32(syncMarker.length, tokenBytes.length, false);
+                fullPayload.set(tokenBytes, syncMarker.length + 4);
 
                 let bits = [];
-                for (let b of payload) {
+                for (let b of fullPayload) {
                     for (let j = 0; j < 8; j++) bits.push((b >> j) & 1);
                 }
 
-                status.innerText = `[${i+1}/${count}] Aplicando marca: ${currentRecipient}`;
+                status.innerText = `[${i+1}/${count}] Aplicando marca robusta: ${currentRecipient}`;
                 await yieldToMain();
 
                 const newBuffer = originalBuffer.slice(0);
@@ -150,18 +119,18 @@
                 
                 let bitIdx = 0;
                 let pos = 84;
-                for (let t = 0; t < numTriangles && bitIdx < bits.length; t++) {
-                    pos += 12;
+                for (let t = 0; t < numTriangles; t++) {
+                    pos += 12; // Skip Normal
                     for (let v = 0; v < 9; v++) {
-                        if (bitIdx >= bits.length) break;
+                        // Loop infinito nos bits do payload (Redundância)
                         let val = view.getUint32(pos, true);
-                        if (bits[bitIdx]) val |= 1;
+                        if (bits[bitIdx % bits.length]) val |= 1;
                         else val &= ~1;
                         view.setUint32(pos, val, true);
                         bitIdx++;
                         pos += 4;
                     }
-                    pos += 2;
+                    pos += 2; // Attribute byte count
                 }
 
                 status.innerText = `[${i+1}/${count}] Calculando integridade: ${currentRecipient}`;
