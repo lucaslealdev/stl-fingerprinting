@@ -81,3 +81,14 @@ function decryptFernet(tokenB64, keyB64) {
         return null;
     }
 }
+
+// Compatibility for Node.js/Jest
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        yieldToMain,
+        sanitizeFilename,
+        u8ToWords,
+        encryptFernet,
+        decryptFernet
+    };
+}

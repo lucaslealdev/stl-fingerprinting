@@ -17,30 +17,33 @@ This project provides a complete client-side solution for embedding identificati
 
 ## Project Structure
 
-- `index.html`: The Batch Generator. Allows users to upload an STL and a list of recipients to generate multiple personalized copies.
-- `extrator.html`: The Mark Extractor. Allows users to upload a marked STL and provide the security key to reveal the hidden identifier.
-- `styles.css`: Unified styling for both interfaces.
-- `README.md`: User-facing documentation in Portuguese.
+- `index.html`: The Batch Generator UI.
+- `extrator.html`: The Mark Extractor UI.
+- `src/js/core.js`: Core business logic (encryption, decryption, binary manipulation).
+- `src/js/ui.js`: Shared UI helper functions.
+- `src/js/generator.js`: Logic specific to the batch generator.
+- `src/js/extractor.js`: Logic specific to the mark extractor.
+- `src/css/styles.css`: Unified styling.
+- `tests/`: Automated tests (Jest & Playwright).
+- `test-files/`: Sample STL files for testing.
 
 ## Usage & Development
 
 ### Running the Project
-Since this is a client-side only project, you can run it by simply opening the `.html` files in any modern web browser. No local server or installation is strictly required, although a local server (like `live-server`) is recommended for development to avoid certain CORS or file protocol limitations if they arise.
+Since this is a client-side only project, you can run it by simply opening the `.html` files in any modern web browser.
 
 ### Building & Testing
-- **Build:** There is no build step. The project uses plain HTML/JS/CSS.
+- **Build:** There is no build step.
 - **Dependencies:** External libraries (JSZip, CryptoJS) are loaded via CDN.
-- **Testing:** Currently, testing is manual. Verify changes by generating a batch and then using the extractor to confirm the data can be retrieved.
+- **Testing:** The project is now structured for unit testing (e.g., using Jest). You can test functions in `core.js` independently of the DOM.
 
 ### Development Conventions
-- **Language:** Code comments and logic are in English/Mixed, while the UI is in Portuguese.
-- **Architecture:** Procedural JavaScript within `<script>` tags. For larger features, consider extracting logic into dedicated `.js` files.
-- **Responsiveness:** Always use the `yieldToMain` pattern (`await new Promise(r => setTimeout(r, 0))`) during heavy loops (MD5, geometry processing) to prevent UI freezing and allow progress bar updates.
-- **STL Format:** Only **Binary STL** is supported. ASCII STL files will trigger errors in the extractor.
-- **LSB Steganography:** The least significant bit (LSB) of the vertex coordinate values (treated as `uint32` bits) is used to store the encrypted payload.
+- **Language:** Code comments and logic are in English, while the UI is in Portuguese.
+- **Architecture:** Separated concerns between UI, Core logic, and Page-specific logic.
+- **Responsiveness:** Always use the `yieldToMain` pattern to prevent UI freezing.
 
 ## TODO / Future Improvements
-- [ ] Implement unit tests for the encryption and embedding logic.
+- [ ] Implement unit tests for the encryption and embedding logic (using Jest).
 - [ ] Add support for ASCII STL (conversion to binary before processing).
-- [ ] Modernize the project structure by moving JS logic out of HTML files.
+- [x] Modernize the project structure by moving JS logic out of HTML files.
 - [ ] Add a visual 3D preview of the STL before/after marking.

@@ -1,0 +1,31 @@
+{
+  "name": "stl-finger",
+  "version": "1.0.0",
+  "description": "Uma solução completa e baseada em navegador para marcar arquivos STL de forma invisível e segura. Proteja sua propriedade intelectual em modelos 3D através de esteganografia de alta precisão e criptografia AES, tudo processado localmente no seu computador.",
+  "main": "core.js",
+  "scripts": {
+    "test:unit": "jest",
+    "test:e2e": "playwright test",
+    "test": "npm run test:unit && npm run test:e2e"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lucaslealdev/stl-fingerprinting.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/lucaslealdev/stl-fingerprinting/issues"
+  },
+  "homepage": "https://github.com/lucaslealdev/stl-fingerprinting#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "adm-zip": "^0.5.17",
+    "crypto-js": "^4.2.0",
+    "jest": "^30.4.2",
+    "jest-environment-jsdom": "^30.4.1",
+    "jszip": "^3.10.1"
+  }
+}
